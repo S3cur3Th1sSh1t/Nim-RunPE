@@ -2,6 +2,10 @@
 
 A Nim implementation of reflective PE-Loading from memory. The base for this code was taken from [RunPE-In-Memory](https://github.com/aaaddress1/RunPE-In-Memory) - which I ported to Nim.
 
+You'll need to install the following dependencies:
+
+`nimble install ptr_math winim`
+
 The technique itself it pretty old, but I didn't find a Nim implementation yet. So this has changed now. :)
 
 ![alt text](https://github.com/S3cur3Th1sSh1t/Nim-RunPE/raw/main/Nim-RunPE.PNG)
