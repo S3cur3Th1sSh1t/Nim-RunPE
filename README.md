@@ -14,4 +14,4 @@ If you plan to load e.g. Mimikatz with this technique - make sure to compile a v
 
 ![alt text](https://github.com/S3cur3Th1sSh1t/Nim-RunPE/raw/main/Mimiload.PNG)
 
-My private [Packer](https://twitter.com/ShitSecure/status/1482428360500383755) will also get weaponized with this technique - but all Win32 functions will be replaced with Syscalls there which will make the technique stealthier + signature changes of course.
+My private [Packer](https://twitter.com/ShitSecure/status/1482428360500383755) is also weaponized with this technique - but all Win32 functions are replaced with Syscalls there. That makes the technique stealthier.
