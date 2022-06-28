@@ -3,32 +3,38 @@ import ptr_math
 
 var success: BOOL
 
-const toLoadfromMem = slurp"C:\\windows\\system32\\cmd.exe"
-
+when defined(args):
+    const toLoadfromMem = slurp"C:\\windows\\system32\\cmd.exe"
+else:
+    const toLoadfromMem = slurp"C:\\windows\\system32\\calc.exe"
 # pass this arguments to the PE 
 # to use the args of the parent process just pass an empty string
-const exeArgs = "/c whoami"
+when defined(args):
+    const exeArgs = "/c whoami"
+else:
+    const exeArgs = ""
 
 func toByteSeq*(str: string): seq[byte] {.inline.} =
   ## Converts a string to the corresponding byte sequence.
   @(str.toOpenArrayByte(0, str.high))
 
-proc patchMemory*(targetAddr: pointer, data: openArray[byte]): void =
-    var oldProtect: DWORD
-    VirtualProtect(targetAddr, cast[SIZE_T](len(data)), PAGE_READWRITE, cast[PDWORD](addr(oldProtect)))
-    copyMem(targetAddr, unsafeAddr data[0], len(data))
-    VirtualProtect(targetAddr, cast[SIZE_T](len(data)), oldProtect, cast[PDWORD](addr(oldProtect)))
-
-proc patchArgFunctionMemory*(funcAddr: pointer, pNewCommandLine: pointer): void =
-    when defined x86:
-        var shellcode: seq[byte] = @[byte(0xb8)] # movabs rax, new_cmd
-    else:
-        var shellcode: seq[byte] = @[byte(0x48), byte(0xb8)] # movabs rax, new_cmd
-    # add new_cmd addr to shellcode
-    for t in cast[array[sizeOf(pointer), byte]](pNewCommandLine):
-        shellcode.add t        
-    shellcode.add(byte(0xc3)) # ret
-    patchMemory(funcAddr, shellcode)
+when defined(args):
+    proc patchMemory*(targetAddr: pointer, data: openArray[byte]): void =
+        var oldProtect: DWORD
+        VirtualProtect(targetAddr, cast[SIZE_T](len(data)), PAGE_READWRITE, cast[PDWORD](addr(oldProtect)))
+        copyMem(targetAddr, unsafeAddr data[0], len(data))
+        VirtualProtect(targetAddr, cast[SIZE_T](len(data)), oldProtect, cast[PDWORD](addr(oldProtect)))
+when defined(args):
+    proc patchArgFunctionMemory*(funcAddr: pointer, pNewCommandLine: pointer): void =
+        when defined x86:
+            var shellcode: seq[byte] = @[byte(0xb8)] # movabs rax, new_cmd
+        else:
+            var shellcode: seq[byte] = @[byte(0x48), byte(0xb8)] # movabs rax, new_cmd
+        # add new_cmd addr to shellcode
+        for t in cast[array[sizeOf(pointer), byte]](pNewCommandLine):
+            shellcode.add t        
+        shellcode.add(byte(0xc3)) # ret
+        patchMemory(funcAddr, shellcode)
 
 var memloadBytes = toByteSeq(toLoadfromMem)
 
@@ -144,23 +150,24 @@ proc fixIAT*(modulePtr: PVOID, exeArgs: Stringable): bool =
     var offsetThunk: csize_t = 0
     var hmodule: HMODULE = LoadLibraryA(libname)
 
-    var commandStr: string
-    var exeArgsPassed = false
-    if len(exeArgs) > 0: 
-        commandStr = " " & exeArgs # in case commands are passed we have to prepend at least a space so that argv[1] is the first part of exeArgs
-        exeArgsPassed = true
-    if exeArgsPassed:
-        # patch _wcmdln and _acmdln if they are present in the import to make exeArgs working for some C++ binaries
-        var wcmdlenaddr = GetProcAddress(hmodule,"_wcmdln") 
-        if wcmdlenaddr != NULL:
-            echo "        Found _wcmdln -> patching with exeArgs"
-            var newCmd = newWideCString(commandStr) # we have to prepend 
-            patchMemory(wcmdlenaddr, cast[array[sizeOf(pointer), byte]](newCmd))
-        var acmdlenaddr = GetProcAddress(hmodule,"_acmdln") 
-        if acmdlenaddr != NULL:
-            echo "        Found _wcmdln -> patching with exeArgs"
-            var newCmd = &(commandStr)
-            patchMemory(acmdlenaddr, cast[array[sizeOf(pointer), byte]](newCmd))
+    when defined(args):
+        var commandStr: string
+        var exeArgsPassed = false
+        if len(exeArgs) > 0: 
+            commandStr = " " & exeArgs # in case commands are passed we have to prepend at least a space so that argv[1] is the first part of exeArgs
+            exeArgsPassed = true
+        if exeArgsPassed:
+            # patch _wcmdln and _acmdln if they are present in the import to make exeArgs working for some C++ binaries
+            var wcmdlenaddr = GetProcAddress(hmodule,"_wcmdln") 
+            if wcmdlenaddr != NULL:
+                echo "        Found _wcmdln -> patching with exeArgs"
+                var newCmd = newWideCString(commandStr) # we have to prepend 
+                patchMemory(wcmdlenaddr, cast[array[sizeOf(pointer), byte]](newCmd))
+            var acmdlenaddr = GetProcAddress(hmodule,"_acmdln") 
+            if acmdlenaddr != NULL:
+                echo "        Found _wcmdln -> patching with exeArgs"
+                var newCmd = &(commandStr)
+                patchMemory(acmdlenaddr, cast[array[sizeOf(pointer), byte]](newCmd))
         
     while true:
       var fieldThunk: PIMAGE_THUNK_DATA = cast[PIMAGE_THUNK_DATA]((
@@ -187,13 +194,14 @@ proc fixIAT*(modulePtr: PVOID, exeArgs: Stringable): bool =
         echo "        [V] API: ", func_name
         fieldThunk.u1.Function = ULONGLONG(libaddr)
 
-        # patch common Win32 functions to get the command line
-        if exeArgsPassed and "GetCommandLineW" == $$func_name:
-            echo "           [>] Patching function to pass exeArgs: ", func_name
-            patchArgFunctionMemory(cast[pointer](libaddr), cast[pointer](newWideCString(commandStr)))
-        if exeArgsPassed and $$"GetCommandLineA" == func_name:
-            echo "           [>] Patching function to pass exeArgs: ", func_name
-            patchArgFunctionMemory(cast[pointer](libaddr), cast[pointer](&commandStr))
+        when defined(args):
+            # patch common Win32 functions to get the command line
+            if exeArgsPassed and "GetCommandLineW" == $$func_name:
+                echo "           [>] Patching function to pass exeArgs: ", func_name
+                patchArgFunctionMemory(cast[pointer](libaddr), cast[pointer](newWideCString(commandStr)))
+            if exeArgsPassed and $$"GetCommandLineA" == func_name:
+                echo "           [>] Patching function to pass exeArgs: ", func_name
+                patchArgFunctionMemory(cast[pointer](libaddr), cast[pointer](&commandStr))
 
       inc(offsetField, sizeof((IMAGE_THUNK_DATA)))
       inc(offsetThunk, sizeof((IMAGE_THUNK_DATA)))
