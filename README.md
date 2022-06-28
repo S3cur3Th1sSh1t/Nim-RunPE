@@ -6,6 +6,20 @@ You'll need to install the following dependencies:
 
 `nimble install ptr_math winim`
 
+I did test this with Nim Version 1.6.2 only, so use that version for testing or I cannot guarantee no errors when using another version.
+
+## Compile
+
+If you want to pass arguments on runtime or don't want to pass arguments at all compile via:
+
+`nim c NimRunPE.nim`
+
+If you want to hardcode custom arguments modify `const exeArgs` to your needs and compile with:
+
+`nim c -d:args NimRunPE.nim` - this was contributed by [@glynx](https://github.com/glynx), thanks! :sunglasses:
+
+## More Information
+
 The technique itself it pretty old, but I didn't find a Nim implementation yet. So this has changed now. :)
 
 ![alt text](https://github.com/S3cur3Th1sSh1t/Nim-RunPE/raw/main/Nim-RunPE.PNG)
