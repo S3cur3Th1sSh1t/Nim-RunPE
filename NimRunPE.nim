@@ -208,6 +208,29 @@ proc fixIAT*(modulePtr: PVOID, exeArgs: Stringable): bool =
     inc(parsedSize, sizeof((IMAGE_IMPORT_DESCRIPTOR)))
   return true
 
+proc ExecTLSCallbacks*(baseAddress: PVOID) =
+  var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(baseAddress,
+      IMAGE_DIRECTORY_ENTRY_TLS)
+  var ntHeader: ptr IMAGE_NT_HEADERS = cast[ptr IMAGE_NT_HEADERS](getNtHdrs(cast[ptr byte](baseAddress)))
+ 
+  if tlsDir == nil:
+    echo "[-] No TLS Directory found"
+    return
+  else:
+    echo "[+] TLS Directory found"
+  var tls: ptr IMAGE_TLS_DIRECTORY = cast[ptr IMAGE_TLS_DIRECTORY](
+      cast[ULONGLONG](baseAddress) + tlsDir.VirtualAddress)
+  var tlsCallback: ptr ULONGLONG = cast[ptr ULONGLONG](tls.AddressOfCallBacks)
+  
+  while tlsCallback[] != 0:
+    echo "    [+] TLS Callback: ", repr(&tlsCallback[])
+    var callback: proc(hinstDLL: HINSTANCE, fdwReason: DWORD, lpvReserved: LPVOID): void {.cdecl.} = cast[proc(hinstDLL: HINSTANCE, fdwReason: DWORD, lpvReserved: LPVOID): void {.cdecl.}](tlsCallback[])
+    try:
+      callback(cast[HINSTANCE](baseAddress), DLL_PROCESS_ATTACH, nil)
+    except:
+      echo "[-] TLS Callback failed"
+    tlsCallback = tlsCallback + 1
+
 var pImageBase: ptr BYTE = nil
 var preferAddr: LPVOID = nil
 var ntHeader: ptr IMAGE_NT_HEADERS = cast[ptr IMAGE_NT_HEADERS](getNtHdrs(shellcodePtr))
@@ -251,6 +274,8 @@ while i < cast[int](ntHeader.FileHeader.NumberOfSections):
   inc(i)
 
 var goodrun = fixIAT(pImageBase, exeArgs)
+
+ExecTLSCallbacks(pImageBase)
 
 if pImageBase != preferAddr:
   if applyReloc(cast[ULONGLONG](pImageBase), cast[ULONGLONG](preferAddr), pImageBase,
