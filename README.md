@@ -18,6 +18,13 @@ If you want to hardcode custom arguments modify `const exeArgs` to your needs an
 
 `nim c -d:args NimRunPE.nim` - this was contributed by [@glynx](https://github.com/glynx), thanks! :sunglasses:
 
+If you want full Thread Local Storage (TLS) callback support, **allowing execution of Rust PEs** etc, compile with:
+
+`nim c -d:full_tls NimRunPE.nim`
+
+Credit to [BlackBone](https://github.com/DarthTon/Blackbone) & [lander's blog](https://landaire.net/reflective-pe-loader-for-xbox/)/[solstice-loader](https://github.com/exploits-forsale/solstice/tree/main/crates/solstice_loader)
+for the implementation of the `full_tls` option.
+
 ## More Information
 
 The technique itself it pretty old, but I didn't find a Nim implementation yet. So this has changed now. :)
