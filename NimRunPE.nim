@@ -1,7 +1,33 @@
 import winim
 import ptr_math
 
-var success: BOOL
+
+### Constants for full_tls option
+when defined(full_tls):
+  const FULL_TLS = true
+else:
+  const FULL_TLS = false
+
+# These work on Win 11, might need extra logic to deal with older versions
+# See:
+#    https://github.com/DarthTon/Blackbone/blob/5ede6ce50cd8ad34178bfa6cae05768ff6b3859b/src/BlackBone/Symbols/PatternLoader.cpp#L70
+# For more info
+const
+  LDRP_RELEASE_TLS_ENTRY_SIGNATURE_BYTES = [byte 0x83, 0xE1, 0x07, 0x48, 0xC1, 0xEA, 0x03]
+  LDRP_HANDLE_TLS_DATA_SIGNATURE_BYTES = [byte 0xBA, 0x23, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC9, 0xFF]
+
+type
+  LdrpReleaseTlsEntryFn = proc(entry: ptr LDR_DATA_TABLE_ENTRY, unk: pointer) {.cdecl.}
+  LdrpHandleTlsDataFn = proc(entry: ptr LDR_DATA_TABLE_ENTRY) {.cdecl.}
+
+when defined(WIN64):
+  const
+    PEB_OFFSET* = 0x30
+else:
+  const
+    PEB_OFFSET* = 0x60
+
+### End full_tls constants
 
 when defined(args):
     const toLoadfromMem = slurp"C:\\windows\\system32\\cmd.exe"
@@ -208,10 +234,103 @@ proc fixIAT*(modulePtr: PVOID, exeArgs: Stringable): bool =
     inc(parsedSize, sizeof((IMAGE_IMPORT_DESCRIPTOR)))
   return true
 
+# Source: https://github.com/S3cur3Th1sSh1t/Nim_DInvoke
+proc GetPPEB(p: culong): PPEB {. 
+    header: 
+        """#include <windows.h>
+           #include <winnt.h>""", 
+    importc: "__readgsqword"
+.}
+
+proc getModuleSectionByName(baseAddr: HMODULE, sectionName: array[0..7, byte]): (ptr BYTE, DWORD) =
+  let ntHeaders = cast[ptr IMAGE_NT_HEADERS](getNtHdrs(cast[ptr BYTE](baseAddr)))
+
+  if ntHeaders == nil:
+    return (nil, 0)
+
+  var sectionHeaders = cast[ptr IMAGE_SECTION_HEADER](ntHeaders + 1)
+  for i in 0..<cast[int](ntHeaders.FileHeader.NumberOfSections):
+    let section = sectionHeaders + (i * sizeof(IMAGE_SECTION_HEADER))
+
+    if section.Name == sectionName:
+      let sectionAddr = cast[ptr BYTE](baseAddr + section.VirtualAddress)
+      return (sectionAddr, section.SizeOfRawData)
+
+  return (nil, 0)  # Section not found
+
+proc findPattern(data: ptr uint8, dataLen: int, pattern: openArray[uint8]): ptr uint8 =
+  let patternLen = pattern.len
+  for i in 0..(dataLen - patternLen):
+    var matched = true
+    for j in 0..<patternLen:
+      if data[i + j] != pattern[j]:
+        matched = false
+        break
+    if matched:
+      return data + i
+  return nil
+
+proc FullPatchTLS*(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointer) =
+  var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(newBaseAddress, IMAGE_DIRECTORY_ENTRY_TLS)
+
+  if tlsDir == nil:
+    echo "[-] No TLS Directory found"
+    return
+  else:
+    echo "[+] TLS Directory found, attempting to fully load target's TLS section..."
+
+  let currentModule = GetModuleHandleA(nil)
+
+  let peb = GetPPEB(PEB_OFFSET)
+
+  let ldrData = peb.Ldr
+  let moduleListHead = &ldrData.InMemoryOrderModuleList
+  var next = moduleListHead.Flink
+
+  while next != moduleListHead:
+    let moduleInfo = cast[ptr LDR_DATA_TABLE_ENTRY](next - 1)
+    if moduleInfo.DllBase != cast[PVOID](currentModule):
+      next = next.Flink
+      continue
+
+    moduleInfo.DllBase = newBaseAddress
+    moduleInfo.Reserved3[0] = cast[pointer](entrypoint)
+    moduleInfo.Reserved3[1] = cast[pointer](moduleSize)
+
+    let ntdllAddr = GetModuleHandleA("ntdll.dll".cstring)
+    let (ntdllText, ntdllTextLen) = getModuleSectionByName(ntdllAddr, [byte 46, 116, 101, 120, 116, 0, 0, 0]) # ".text\0\0\0"
+    if ntdllText == nil:
+      break
+
+    echo "\t[+] Found NTDLL's .text section..."
+
+    # Search for LDRP_RELEASE_TLS_ENTRY_SIGNATURE_BYTES pattern
+    let ldrpReleaseTlsEntryPtr = findPattern(cast[ptr uint8](ntdllText), ntdllTextLen, LDRP_RELEASE_TLS_ENTRY_SIGNATURE_BYTES)
+    if ldrpReleaseTlsEntryPtr != nil:
+      var loc = ldrpReleaseTlsEntryPtr
+      # Walk backwards until we find the prologue (0xcc 0xcc)
+      while loc[-1] != 0xcc or loc[-2] != 0xcc:
+        loc = loc - 1
+
+      let LdrpReleaseTlsEntry = cast[LdrpReleaseTlsEntryFn](loc)
+      echo "\t[+] Found ReleaseTlsEntry, calling..."
+      LdrpReleaseTlsEntry(moduleInfo, nil)
+
+    # Search for LDRP_HANDLE_TLS_DATA_SIGNATURE_BYTES pattern
+    let ldrpHandleTlsDataPtr = findPattern(cast[ptr uint8](ntdllText), ntdllTextLen, LDRP_HANDLE_TLS_DATA_SIGNATURE_BYTES)
+    if ldrpHandleTlsDataPtr != nil:
+      var loc = ldrpHandleTlsDataPtr
+      # Walk backwards until we find the prologue (0xcc 0xcc)
+      while loc[-1] != 0xcc or loc[-2] != 0xcc:
+        loc = loc - 1
+
+      let LdrpHandleTlsData = cast[LdrpHandleTlsDataFn](loc)
+      echo "\t[+] Found HandleTlsData, calling..."
+      LdrpHandleTlsData(moduleInfo)
+
 proc ExecTLSCallbacks*(baseAddress: PVOID) =
   var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(baseAddress,
       IMAGE_DIRECTORY_ENTRY_TLS)
-  var ntHeader: ptr IMAGE_NT_HEADERS = cast[ptr IMAGE_NT_HEADERS](getNtHdrs(cast[ptr byte](baseAddress)))
  
   if tlsDir == nil:
     echo "[-] No TLS Directory found"
@@ -275,7 +394,10 @@ while i < cast[int](ntHeader.FileHeader.NumberOfSections):
 
 var goodrun = fixIAT(pImageBase, exeArgs)
 
-ExecTLSCallbacks(pImageBase)
+if FULL_TLS:
+  FullPatchTLS(pImageBase, ntHeader.OptionalHeader.SizeOfImage, pImageBase + ntHeader.OptionalHeader.AddressOfEntryPoint)
+else:
+  ExecTlsCallbacks(pImageBase)
 
 if pImageBase != preferAddr:
   if applyReloc(cast[ULONGLONG](pImageBase), cast[ULONGLONG](preferAddr), pImageBase,
