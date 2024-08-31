@@ -270,15 +270,7 @@ proc findPattern(data: ptr uint8, dataLen: int, pattern: openArray[uint8]): ptr 
       return data + i
   return nil
 
-proc FullPatchTLS*(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointer) =
-  var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(newBaseAddress, IMAGE_DIRECTORY_ENTRY_TLS)
-
-  if tlsDir == nil:
-    echo "[-] No TLS Directory found"
-    return
-  else:
-    echo "[+] TLS Directory found, attempting to fully load target's TLS section..."
-
+proc FullPatchTLS(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointer): bool =
   let currentModule = GetModuleHandleA(nil)
 
   let peb = GetPPEB(PEB_OFFSET)
@@ -287,6 +279,7 @@ proc FullPatchTLS*(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointe
   let moduleListHead = &ldrData.InMemoryOrderModuleList
   var next = moduleListHead.Flink
 
+  var calledRelease, calledHandle = false
   while next != moduleListHead:
     let moduleInfo = cast[ptr LDR_DATA_TABLE_ENTRY](next - 1)
     if moduleInfo.DllBase != cast[PVOID](currentModule):
@@ -315,6 +308,7 @@ proc FullPatchTLS*(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointe
       let LdrpReleaseTlsEntry = cast[LdrpReleaseTlsEntryFn](loc)
       echo "\t[+] Found ReleaseTlsEntry, calling..."
       LdrpReleaseTlsEntry(moduleInfo, nil)
+      calledRelease = true
 
     # Search for LDRP_HANDLE_TLS_DATA_SIGNATURE_BYTES pattern
     let ldrpHandleTlsDataPtr = findPattern(cast[ptr uint8](ntdllText), ntdllTextLen, LDRP_HANDLE_TLS_DATA_SIGNATURE_BYTES)
@@ -327,16 +321,10 @@ proc FullPatchTLS*(newBaseAddress: ptr byte, moduleSize: int, entrypoint: pointe
       let LdrpHandleTlsData = cast[LdrpHandleTlsDataFn](loc)
       echo "\t[+] Found HandleTlsData, calling..."
       LdrpHandleTlsData(moduleInfo)
+      calledHandle = true
+  return calledRelease and calledHandle
 
-proc ExecTLSCallbacks*(baseAddress: PVOID) =
-  var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(baseAddress,
-      IMAGE_DIRECTORY_ENTRY_TLS)
- 
-  if tlsDir == nil:
-    echo "[-] No TLS Directory found"
-    return
-  else:
-    echo "[+] TLS Directory found"
+proc ExecTLSCallbacks*(baseAddress: PVOID, tlsDir: ptr IMAGE_DATA_DIRECTORY) =
   var tls: ptr IMAGE_TLS_DIRECTORY = cast[ptr IMAGE_TLS_DIRECTORY](
       cast[ULONGLONG](baseAddress) + tlsDir.VirtualAddress)
   var tlsCallback: ptr ULONGLONG = cast[ptr ULONGLONG](tls.AddressOfCallBacks)
@@ -394,10 +382,20 @@ while i < cast[int](ntHeader.FileHeader.NumberOfSections):
 
 var goodrun = fixIAT(pImageBase, exeArgs)
 
-if FULL_TLS:
-  FullPatchTLS(pImageBase, ntHeader.OptionalHeader.SizeOfImage, pImageBase + ntHeader.OptionalHeader.AddressOfEntryPoint)
+var tlsDir: ptr IMAGE_DATA_DIRECTORY = getPeDir(pImageBase,
+    IMAGE_DIRECTORY_ENTRY_TLS)
+
+if tlsDir == nil:
+  echo "[-] No TLS Directory found"
 else:
-  ExecTlsCallbacks(pImageBase)
+  if FULL_TLS:
+    echo "[+] TLS Directory found, attempting to fully patch TLS"
+    if FullPatchTLS(pImageBase, ntHeader.OptionalHeader.SizeOfImage, pImageBase + ntHeader.OptionalHeader.AddressOfEntryPoint) == false:
+      echo "[-] WARNING: Full TLS patch failed, falling back to running callbacks once"
+      ExecTlsCallbacks(pImageBase, tlsDir)
+  else:
+    echo "[+] TLS Directory found, running callbacks once"
+    ExecTlsCallbacks(pImageBase, tlsDir)
 
 if pImageBase != preferAddr:
   if applyReloc(cast[ULONGLONG](pImageBase), cast[ULONGLONG](preferAddr), pImageBase,
